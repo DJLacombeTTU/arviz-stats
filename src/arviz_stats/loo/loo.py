@@ -1,8 +1,6 @@
 """Pareto-smoothed importance sampling LOO (PSIS-LOO-CV)."""
 
-import warnings
 import numpy as np
-
 from arviz_base import rcParams
 from xarray_einstats.stats import logsumexp
 
@@ -73,6 +71,15 @@ def loo(
         original response scale :math:`y`. The value should be :math:`\log|\frac{dz}{dy}|`
         (the log absolute value of the derivative of the transformation). Must be a DataArray
         with dimensions matching the observation dimensions.
+    score_type : str, optional
+        The scoring rule to use for evaluating predictive accuracy. Options are ``"log"`` for
+        standard expected log pointwise predictive density (ELPD) and ``"beta"`` for
+        generalized ELPD using Bregman divergence. Defaults to ``"log"``.
+    beta : float, optional
+        The scaling parameter for the beta-divergence scoring rule. Only used if
+        ``score_type="beta"``. Must be strictly greater than 1.0. Higher values yield more
+        robust scoring against influential observations (outliers) at the cost of statistical
+        efficiency. Defaults to 1.0.
     mixture : bool, optional
         If True, use mixture importance sampling LOO (Mix-IS-LOO) instead of PSIS-LOO.
         This is appropriate when the log-likelihood was generated from a mixture distribution.
@@ -166,21 +173,25 @@ def loo(
     .. [3] Vehtari et al. *Pareto Smoothed Importance Sampling*.
        Journal of Machine Learning Research, 25(72) (2024) https://jmlr.org/papers/v25/19-556.html
        arXiv preprint https://arxiv.org/abs/1507.02646
+
+    .. [4] Choi, Spencer, and Dey. *Robust Bayesian Predictive Model Selection using
+       Bregman Divergence*. arXiv preprint https://arxiv.org/abs/2606.10409
     """
     # --- NEW: g-ELPD Input Validation ---
     if score_type.lower() not in ("log", "beta"):
         raise ValueError("score_type must be either 'log' or 'beta'.")
-        
+
     if score_type.lower() == "beta":
         if beta <= 1.0:
             import warnings
+
             warnings.warn(
                 f"Beta must be strictly greater than 1.0 for beta-divergence (received {beta}). "
                 "Defaulting to standard log-score ELPD."
             )
             score_type = "log"
     # ------------------------------------
-    
+
     loo_inputs = _prepare_loo_inputs(data, var_name, log_lik_fn=log_lik_fn)
     pointwise = rcParams["stats.ic_pointwise"] if pointwise is None else pointwise
 
@@ -198,31 +209,30 @@ def loo(
     if log_weights is None and pareto_k is None:
         if score_type == "beta":
             log_lik = loo_inputs.log_likelihood
-            
-            if not hasattr(data, "posterior_predictive") or loo_inputs.var_name not in data.posterior_predictive:
+
+            if (
+                not hasattr(data, "posterior_predictive")
+                or loo_inputs.var_name not in data.posterior_predictive
+            ):
                 raise ValueError(
-                    f"The posterior_predictive group containing '{loo_inputs.var_name}' is required to compute "
-                    "the integral penalty for beta-divergence g-ELPD."
+                    f"The posterior_predictive group containing '{loo_inputs.var_name}' "
+                    "is required to compute the integral penalty."
                 )
-                
+
             post_pred = data.posterior_predictive[loo_inputs.var_name]
-            integrand = (post_pred ** beta) / beta
-            
+            integrand = (post_pred**beta) / beta
+
             try:
                 integral_penalty = integrand
                 for dim in loo_inputs.obs_dims:
                     integral_penalty = integral_penalty.integrate(coord=dim)
-            except Exception:
+            except (AttributeError, ValueError):
                 integral_penalty = integrand.sum(dim=loo_inputs.obs_dims)
-                
-            S_beta = (np.exp(log_lik * (beta - 1)) / (beta - 1)) - integral_penalty
-            raw_log_weights = -S_beta
-            
+
+            s_beta = (np.exp(log_lik * (beta - 1)) / (beta - 1)) - integral_penalty
+            raw_log_weights = -s_beta
+
             log_weights, pareto_k = raw_log_weights.azstats.psislw(
-                r_eff=reff, dim=loo_inputs.sample_dims
-            )
-        else:
-            log_weights, pareto_k = loo_inputs.log_likelihood.azstats.psislw(
                 r_eff=reff, dim=loo_inputs.sample_dims
             )
 
