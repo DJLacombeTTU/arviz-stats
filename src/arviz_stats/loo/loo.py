@@ -198,6 +198,9 @@ def loo(
     if reff is None:
         reff = _get_r_eff(data, loo_inputs.n_samples)
 
+    if reff is None:
+        reff = 1.0
+        
     if (log_weights is None) != (pareto_k is None):
         raise ValueError(
             "Both log_weights and pareto_k must be provided together or both must be None. "
